@@ -1,0 +1,241 @@
+openapi: 3.1.0
+
+# Contrato REST de GymManager, compartido por gym-manager-back (lo implementa),
+# gym-manager-desktop y gym-manager-mobile (lo consumen). Diseño §1: REST (JSON),
+# contrato compartido en OpenAPI.
+#
+# Este archivo define lo transversal: seguridad, esquemas comunes y enumeraciones.
+# Los endpoints se agregan feature por feature, a partir del apartado
+# "Contrato (OpenAPI)" de cada specs/<feature>/design.md.
+#
+# Lo que todavía no está decidido está en x-pendientes, al final. No se completa
+# sin decisión del equipo.
+
+info:
+  title: GymManager API
+  version: 0.1.0
+  summary: API del sistema de gestión de gimnasios GymManager.
+  description: |
+    Backend central (NestJS, monolito modular hexagonal con DDD) consumido por la
+    aplicación desktop (recepción, administración y profesor) y la aplicación mobile
+    (cliente y profesor).
+
+    ## Convenciones
+
+    - **Formato:** JSON en UTF-8. Identificadores **UUID** (D-07).
+    - **Idioma:** nombres de campos y mensajes en español, con los términos del glosario.
+    - **Fechas:** los instantes van en ISO 8601 con zona horaria (`date-time`); las fechas de
+      calendario, en `date`; las horas, en `HH:mm`. Los vencimientos, rachas y fechas del día se
+      calculan en el servidor con la zona **America/Argentina/Cordoba** (RNF 16).
+    - **Montos:** pesos argentinos (RNF 16), con dos decimales.
+    - **Aislamiento de gimnasios (RNF 13):** el gimnasio **no** se envía como parámetro en las
+      operaciones autenticadas: sale del token del usuario y el servidor filtra todo por él.
+      Ningún usuario puede ver ni modificar datos de otro gimnasio.
+    - **Datos sensibles:** el historial médico solo lo reciben los roles que habilita la matriz
+      de permisos, y cada consulta queda registrada (RNF 15). Nunca viajan datos de tarjeta: el
+      pago con tarjeta usa el formulario seguro de Mercado Pago, que devuelve un token (RNF 5).
+
+    ## Autenticación y sesiones
+
+    - **Inicio de sesión (C.U. 1):** email y contraseña. Si son válidos y la cuenta está
+      ACTIVO, el servidor crea una **sesión** y devuelve:
+      - un **token de acceso JWT**, de vida corta, que se envía en cada request como
+        `Authorization: Bearer <token>`;
+      - un **token de refresco**, opaco, que solo sirve para renovar el token de acceso. El
+        servidor guarda únicamente su hash, en la tabla técnica `sesiones`, junto con la app que
+        lo pidió (`desktop` o `mobile`), su vencimiento y su revocación.
+    - **El token de acceso identifica** al usuario, a su gimnasio y a su rol. Con eso se
+      resuelven los permisos de la matriz (RNF 1) y el filtro por gimnasio (RNF 13). Los permisos
+      no viajan en el token: son fijos por rol (D-11).
+    - **Renovación:** con el token de refresco se obtiene un token de acceso nuevo, mientras la
+      sesión no esté vencida ni revocada.
+    - **Cierre de sesión (C.U. 2):** revoca la sesión. En desktop sin conexión se cierra la
+      sesión local y se revoca en el servidor al recuperar la conexión.
+    - **Cierre de todas las sesiones:** al cambiar la contraseña (C.U. 34) se revocan todas las
+      sesiones del usuario, incluida la actual. Lo mismo cuando la cuenta pasa a INACTIVO
+      (Diseño §5.1).
+    - **Bloqueo (RNF 2, D-41):** tras 5 intentos fallidos seguidos de inicio de sesión, el acceso
+      se bloquea 15 minutos. El mensaje de error no indica si falló el email o la contraseña.
+    - **Estados que impiden iniciar sesión (C.U. 1):** INACTIVO, PENDIENTE_ACTIVACION (se ofrece
+      reenviar el enlace de activación) y solicitud de asociación todavía pendiente.
+    - **Contraseñas (RNF 2):** de 8 a 64 caracteres, con al menos una letra y un número; siempre
+      hasheadas, también en la solicitud de asociación.
+    - **Códigos de verificación de email y de recuperación de contraseña (C.U. 33 y 54, RNF 2):**
+      6 dígitos, válidos 10 minutos, 3 intentos, un solo uso. Se guardan hasheados en la tabla
+      técnica `codigos_verificacion`.
+    - **Enlace de activación del personal (C.U. 39 y 73, D-40):** es un **JWT firmado con un
+      secreto propio, distinto del de sesión**, que lleva el usuario y el email de destino y vence
+      a las 48 horas. No se guarda en la base. Solo vale mientras el usuario siga en
+      PENDIENTE_ACTIVACION y el email coincida.
+    - **Webhooks de Mercado Pago (C.U. 84):** no usan el token de sesión. Se valida la firma que
+      envía Mercado Pago en cada notificación.
+
+    ## Operaciones públicas
+
+    Las operaciones sin sesión declaran `security: []`. Según el C.U. 1, sin sesión solo se
+    accede a la información pública, al registro de cuenta (C.U. 7), a la recuperación de
+    contraseña (C.U. 33), a la verificación de email (C.U. 54), a la activación de cuenta del
+    personal (C.U. 39 y 73) y a los webhooks de Mercado Pago (C.U. 84). Todo lo demás exige
+    `bearerAuth`.
+  contact:
+    name: Grupo 22 — Seminario Integrador, UTN FRVM
+
+servers:
+  - url: "{protocolo}://{host}"
+    description: Servidor de la API. Los valores concretos se definen en la feature fundacion.
+    variables:
+      protocolo:
+        default: http
+        enum: [http, https]
+      host:
+        default: localhost:3000
+        description: En local, el puerto por defecto de NestJS. El de producción queda pendiente.
+
+# Por defecto toda operación exige sesión. Las públicas lo anulan con `security: []`.
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Autenticacion
+    description: Inicio y cierre de sesión, renovación, recuperación y cambio de contraseña, verificación de email y activación de cuenta.
+  - name: Organizacion
+    description: Gimnasio, sucursales (con horarios), servicios y membresías (catálogo).
+  - name: Usuarios
+    description: Usuarios, recepcionistas, profesores, clientes con su historial médico y solicitudes de asociación.
+  - name: Suscripciones
+    description: Membresías de los clientes.
+  - name: Cobros
+    description: Métodos de pago, cobros y comprobantes.
+  - name: Entrenamiento
+    description: Ejercicios, planes de entrenamiento, progreso, solicitudes de plan y retroalimentación.
+  - name: Clases
+    description: Clases e inscripciones.
+  - name: Asistencias
+    description: Asistencias y racha.
+  - name: Sincronizacion
+    description: Sincronización de las apps desktop y mobile (C.U. 86).
+  - name: Webhooks
+    description: Notificaciones entrantes de Mercado Pago (C.U. 84).
+
+paths: {}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Token de acceso JWT obtenido al iniciar sesión (C.U. 1) o al renovar la sesión.
+        Identifica al usuario, a su gimnasio y a su rol. Se rechaza si está vencido, si la
+        sesión fue revocada o si la cuenta dejó de estar ACTIVO.
+    firmaMercadoPago:
+      type: apiKey
+      in: header
+      name: x-signature
+      description: |
+        Firma con la que Mercado Pago autentica cada webhook (C.U. 84). El servidor la valida
+        con el secreto de la integración antes de procesar la notificación. Solo se usa en los
+        endpoints de Webhooks.
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: Identificador de toda entidad (D-07). En las altas offline lo genera el dispositivo (D-27).
+
+    Monto:
+      type: string
+      pattern: '^\d+\.\d{2}$'
+      description: Monto en pesos argentinos con dos decimales, como texto para no perder precisión (RNF 16).
+      examples: ["15000.00"]
+
+    Hora:
+      type: string
+      pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+      description: Hora del día en formato HH:mm, de 00:00 a 23:59 (RangoHorario).
+      examples: ["08:30"]
+
+    RangoHorario:
+      type: object
+      description: Rango de horas dentro de un mismo día; horaInicio es anterior a horaFin.
+      required: [horaInicio, horaFin]
+      properties:
+        horaInicio:
+          $ref: '#/components/schemas/Hora'
+        horaFin:
+          $ref: '#/components/schemas/Hora'
+
+    # Enumeraciones (Diseño §4.9)
+    RolUsuario:
+      type: string
+      enum: [ADMINISTRADOR, RECEPCIONISTA, PROFESOR, CLIENTE]
+    EstadoUsuario:
+      type: string
+      enum: [PENDIENTE_ACTIVACION, ACTIVO, INACTIVO]
+    EstadoSolicitud:
+      type: string
+      enum: [PENDIENTE, ACEPTADA, RECHAZADA]
+    EstadoMembresia:
+      type: string
+      enum: [VIGENTE, VENCIDA, CANCELADA]
+    EstadoCobro:
+      type: string
+      enum: [PENDIENTE, APROBADO, RECHAZADO, CANCELADO, ANULADO]
+    CanalCobro:
+      type: string
+      enum: [MOSTRADOR, ONLINE]
+    TipoMetodoPago:
+      type: string
+      enum: [EFECTIVO, QR_MERCADOPAGO, TARJETA_MERCADOPAGO]
+    EstadoInscripcion:
+      type: string
+      enum: [ACTIVA, CANCELADA]
+    EstadoSolicitudPlan:
+      type: string
+      enum: [PENDIENTE, ATENDIDA, RECHAZADA]
+    DiaSemana:
+      type: string
+      enum: [LUNES, MARTES, MIERCOLES, JUEVES, VIERNES, SABADO, DOMINGO]
+    GrupoMuscular:
+      type: string
+      enum: [PECHO, ESPALDA, PIERNAS, HOMBROS, BRAZOS, CORE, CUERPO_COMPLETO]
+    AppCliente:
+      type: string
+      enum: [desktop, mobile]
+      description: App desde la que se inició la sesión (columna sesiones.cliente_app).
+
+  responses:
+    NoAutenticado:
+      description: Falta el token de acceso, está vencido o la sesión fue revocada. La app tiene que renovar la sesión o pedir iniciar sesión de nuevo (C.U. 86 A3).
+    SinPermiso:
+      description: El rol del usuario no tiene permiso para la operación según la matriz de permisos (RNF 1).
+
+x-pendientes:
+  - id: P-01
+    tema: Duración del token de acceso y de la sesión (token de refresco)
+    detalle: No está definida. Hay que decidirla teniendo en cuenta que el desktop trabaja offline (RNF 11) y que C.U. 86 A3 pide iniciar sesión de nuevo si la sesión venció.
+  - id: P-02
+    tema: Rotación del token de refresco
+    detalle: Si cada renovación emite un token de refresco nuevo e invalida el anterior, o si se reutiliza hasta que vence.
+  - id: P-03
+    tema: Nombres de los claims del JWT
+    detalle: El token tiene que llevar usuario, gimnasio y rol. Falta fijar los nombres (por ejemplo sub, gimnasioId, rol) y el algoritmo de firma.
+  - id: P-04
+    tema: Resolución del gimnasio al iniciar sesión
+    detalle: El email es único por gimnasio (D-36), pero el C.U. 1 solo pide email y contraseña. Hoy hay un solo gimnasio (D-19); hay que definir cómo se identifica cuando haya más.
+  - id: P-05
+    tema: Formato común de error
+    detalle: Estructura del cuerpo de las respuestas de error (código, mensaje, detalles de validación) y si los errores de dominio llevan un código propio.
+  - id: P-06
+    tema: Códigos HTTP de casos particulares
+    detalle: Cuenta bloqueada por intentos fallidos (RNF 2), recurso de otro gimnasio (RNF 13; 403 o 404), conflictos de unicidad y de estado.
+  - id: P-07
+    tema: Prefijo y versionado de rutas
+    detalle: Por ejemplo /api/v1. Se define en la feature fundacion.
+  - id: P-08
+    tema: Paginación de listados
+    detalle: RNF 12 pide paginación en los listados; falta definir parámetros y formato de respuesta.
+  - id: P-09
+    tema: Servidor de producción
+    detalle: URL del despliegue (RNF 8, Multiple Service per Host).

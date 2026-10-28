@@ -1,0 +1,26 @@
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
+
+# Word: archivos temporales mientras un .docx está abierto
+~$*.docx
+~$*.doc
+
+# draw.io: backups y archivos temporales
+*.bkp
+*.dtmp
+.$*
+
+# Configuración local de Claude Code (la compartida es .claude/commands/)
+.claude/settings.local.json
+
+# Secretos
+.env
+.env.*

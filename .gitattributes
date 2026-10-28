@@ -1,0 +1,11 @@
+# Texto con fin de línea LF en todas las máquinas
+* text=auto eol=lf
+
+# Binarios
+*.docx binary
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+
+# draw.io es XML: se versiona como texto, sin merge automático
+*.drawio text eol=lf merge=binary
